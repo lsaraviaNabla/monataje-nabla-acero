@@ -1,10 +1,7 @@
 {
-  "icon": "https://lsaravianabla.github.io/monataje-nabla-acero/icon.png",
-  "title": { "en": "Avance de montaje", "es": "Avance de montaje" },
+  "title": "Avance de montaje",
+  "description": "Seguimiento de montaje por ensamble sobre el modelo 3D.",
   "url": "https://lsaravianabla.github.io/monataje-nabla-acero/index.html",
-  "description": {
-    "en": "Assembly erection progress tracking on the 3D model",
-    "es": "Seguimiento de montaje por ensamble sobre el modelo 3D"
-  },
-  "enabled": true
+  "icon": "https://lsaravianabla.github.io/monataje-nabla-acero/icon.png",
+  "extensionType": ["3dviewer"]
 }
