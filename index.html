@@ -25,7 +25,7 @@ td{padding:5px 0;text-align:right}th:first-child,td:first-child{text-align:left}
 #msg{font-size:12px;color:#5a6a7e;margin-top:8px}.warn{color:#b3361b!important}
 a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;margin-right:12px}
 </style></head><body>
-<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v0.7</small></header>
+<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v0.8</small></header>
 <section>
  <label>MODO</label>
  <select id="modoSel"><option value="marcar">Marcado de avance</option><option value="ver">Visualización de avance</option></select>
@@ -46,7 +46,7 @@ a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;marg
  <div class="row"><button class="btn pri" id="bSave" disabled>Guardar</button></div>
  <div style="margin-top:10px"><a class="lnk" id="bExp">Exportar JSON</a><a class="lnk" id="bImp">Importar JSON</a><input type="file" id="fImp" accept=".json" hidden></div>
 </section>
-<section><h2>DIAGNÓSTICO</h2><div class="row" style="margin-top:0"><button class="btn" id="bDiag">Datos de la selección</button><button class="btn" id="bProbe">Probar escritura</button></div>
+<section><h2>DIAGNÓSTICO</h2><div class="row" style="margin-top:0"><button class="btn" id="bDiag">Datos de la selección</button></div>
 <pre id="diag" style="white-space:pre-wrap;font-size:11px;max-height:280px;overflow:auto;margin:8px 0 0"></pre></section>
 <script>
 const $=id=>document.getElementById(id);
@@ -134,10 +134,8 @@ async function escribirTC(nombre,texto,log){
   const put=await fetch(j.uploadURL,{method:'PUT',body:new Blob([texto])});
   L('2. envío del contenido -> '+put.status);
   if(!put.ok)throw new Error('no se pudo enviar el contenido ('+put.status+')');
-  for(const [ruta,body,et] of [['/files/fs/commit?uploadId='+j.uploadId,{},'query'],['/files/fs/commit',{uploadId:j.uploadId},'cuerpo']]){
-    const c=await tcPost(ruta,body);L('3. commit ('+et+') -> '+c.s+' '+c.t.slice(0,160));
-    if(c.s>=200&&c.s<300)break;
-  }
+  const c=await tcPost('/files/fs/commit',{uploadId:j.uploadId});L('3. commit -> '+c.s);
+  if(c.s<200||c.s>=300)throw new Error('commit '+c.s+' '+c.t.slice(0,160));
   for(let k=0;k<4;k++){
     await new Promise(r=>setTimeout(r,1500));
     try{const t=await leerTexto(nombre);if(t===texto){L('4. verificado: el archivo en la carpeta es idéntico');return true}}catch(e){}
@@ -207,7 +205,7 @@ async function marcar(est){
     for(const a of sel){
       if(est==='none'){if(state[a.guid]){delete state[a.guid];dirty++}}
       else if(state[a.guid]&&state[a.guid].estado==='montado')ya.push(a);
-      else{state[a.guid]={marca:a.marca,modelo:a.modelo,peso_kg:a.w,estado:'montado',usuario:user,fecha:f};dirty++}
+      else{state[a.guid]={guid:a.guid,marca:a.marca,modelo:a.modelo,peso_kg:a.w,piezas:a.n,estado:'montado',usuario:user,fecha:f};dirty++}
     }
     await API.viewer.setObjectState(selOf(sel),{color:est==='none'?RGB.gris:RGB.montado});
     render();readSel();
@@ -270,7 +268,7 @@ async function guardar(){
   try{say('Guardando en Trimble Connect…');await escribirTC(ARCH,snap());dirty=0;render();say('Guardado en Trimble Connect ('+CARPETA+').')}
   catch(e){render();say('Se guardó en este equipo, pero no en Trimble: '+e.message,1)}
 }
-const snap=()=>JSON.stringify({proyecto:proy,actualizado:new Date().toISOString(),ensambles:state},null,1);
+const snap=()=>JSON.stringify({proyecto:proy,num_proyecto:(String(proy).match(/^\s*(\d{3,5})/)||[])[1]||'',actualizado:new Date().toISOString(),actualizado_por:user,total_ensambles:Object.keys(state).length,total_peso_kg:Math.round(Object.values(state).reduce((t,e)=>t+(e.peso_kg||0),0)*10)/10,ensambles:state},null,1);
 
 $('modoSel').onchange=async()=>{
   rol=$('modoSel').value;
@@ -290,14 +288,6 @@ $('bSave').onclick=guardar;
 $('bExp').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([snap()],{type:'application/json'}));a.download='avance_'+proy+'.json';a.click()};
 $('bImp').onclick=()=>$('fImp').click();
 $('fImp').onchange=async e=>{try{const j=JSON.parse(await e.target.files[0].text());Object.assign(state,j.ensambles||{});dirty++;render();say('JSON importado. Guarda para conservarlo.')}catch(x){say('Archivo no válido.',1)}};
-$('bProbe').onclick=async()=>{
-  const out=$('diag'),log=[];out.textContent='Probando…';
-  try{
-    const txt=JSON.stringify({prueba:new Date().toISOString()});
-    await escribirTC('prueba_escritura.json',txt,log);
-    out.textContent='ESCRITURA OK en '+CARPETA+'\n'+log.join('\n');
-  }catch(e){out.textContent='FALLÓ: '+(e.message||e)+'\n'+log.join('\n')}
-};
 $('bDiag').onclick=async()=>{
   const out=$('diag');
   try{
