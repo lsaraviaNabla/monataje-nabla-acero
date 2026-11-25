@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Avance de montaje</title>
+<script src="https://components.connect.trimble.com/trimble-connect-workspace-api/index.js"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;font:14px/1.4 "Segoe UI",system-ui,sans-serif;color:#1c2b3f;background:#fff}
+header{background:#16345f;color:#fff;padding:12px 14px;border-bottom:3px solid #e8792b}
+header h1{margin:0;font-size:18px}header small{opacity:.85;font-size:12px}
+section{padding:12px 14px;border-bottom:1px solid #e3e7ec}
+label{display:block;font-size:11px;letter-spacing:.04em;color:#5a6a7e;margin:8px 0 3px}
+input,select{width:100%;padding:8px;border:1px solid #c6ced8;border-radius:4px;font:inherit;background:#fff}
+.seg{display:flex;border:1px solid #16345f;border-radius:4px;overflow:hidden}
+.seg button{flex:1;padding:7px 4px;border:0;background:#fff;color:#16345f;font:inherit;cursor:pointer}
+.seg button.on{background:#16345f;color:#fff}
+.row{display:flex;gap:8px;margin-top:10px}
+.btn{flex:1;padding:9px 6px;border-radius:4px;border:1px solid #16345f;background:#fff;color:#16345f;font:600 13px inherit;cursor:pointer}
+.btn.pri{background:#16345f;color:#fff}.btn:disabled{opacity:.45;cursor:default}
+.btn.g{background:#2e9e4f;border-color:#2e9e4f;color:#fff}.btn.o{background:#f28c28;border-color:#f28c28;color:#fff}
+h2{margin:0 0 6px;font-size:12px;letter-spacing:.04em}
+table{width:100%;border-collapse:collapse}th{font-size:12px;text-align:right;color:#5a6a7e;padding:3px 0}
+td{padding:5px 0;text-align:right}th:first-child,td:first-child{text-align:left}
+.dot{display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:7px;vertical-align:-2px}
+#sel{background:#f3f6fa;border-radius:4px;padding:8px;margin:6px 0;min-height:40px;word-break:break-word}
+#msg{font-size:12px;color:#5a6a7e;margin-top:8px}.warn{color:#b3361b!important}
+a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;margin-right:12px}
+</style></head><body>
+<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v0.1</small></header>
+<section>
+ <label>PROYECTO</label><input id="proy" readonly>
+ <label>ORIGEN DEL AVANCE</label>
+ <select id="orig"><option>Local de pruebas (navegador)</option><option disabled>Trimble Connect · 5.5_DB_REGISTROS (Fase 2)</option></select>
+ <label>PIEZAS A MOSTRAR</label>
+ <div class="seg" id="modo"><button data-m="all" class="on">Todas</button><button data-m="con">Con estado</button><button data-m="sin">Sin estado</button></div>
+ <div class="row"><button class="btn pri" id="bCol">Colorear avance</button><button class="btn" id="bQuit">Quitar colores</button></div>
+ <div id="msg">Carga el modelo y presiona «Colorear avance».</div>
+</section>
+<section>
+ <h2>ESTADO ACTUAL DE LOS ENSAMBLES</h2>
+ <table><tr><th>Etapa</th><th>Ens.</th><th>Ton</th><th>% peso</th></tr>
+ <tbody id="res"></tbody></table>
+</section>
+<section>
+ <h2>ENSAMBLES SELECCIONADOS</h2>
+ <div id="sel">Selecciona piezas en el modelo.</div>
+ <div class="row"><button class="btn o" data-e="proceso">En proceso</button><button class="btn g" data-e="montado">Montado</button><button class="btn" data-e="none">Quitar estado</button></div>
+ <div class="row"><button class="btn pri" id="bSave" disabled>Guardar</button></div>
+ <div style="margin-top:10px"><a class="lnk" id="bExp">Exportar JSON</a><a class="lnk" id="bImp">Importar JSON</a><input type="file" id="fImp" accept=".json" hidden></div>
+</section>
+<script>
+const $=id=>document.getElementById(id);
+const COL={montado:{r:46,g:158,b:79,a:255},proceso:{r:242,g:140,b:40,a:255},none:{r:181,g:181,b:181,a:255}};
+const HEX={montado:'#2e9e4f',proceso:'#f28c28',none:'#b5b5b5'};
+const NOM={montado:'Montado',proceso:'En proceso',none:'Sin estado'};
+let API,cat,p2a={},rt={},state={},sel=[],modo='all',dirty=0,user='desconocido',proy='proyecto',built=false;
+const say=(t,w)=>{$('msg').textContent=t;$('msg').className=w?'warn':''};
+const key=()=>'avance:'+proy;
+
+async function init(){
+  try{
+    cat=await (await fetch('catalogo.json')).json();
+    for(const g in cat.ensambles)for(const p of cat.ensambles[g].p)p2a[p]=g;
+    API=await TrimbleConnectWorkspace.connect(window.parent,(ev,d)=>{if(ev==='viewer.onSelectionChanged')readSel()},30000);
+    try{const pr=await API.project.getProject();proy=pr.name||proy}catch(e){}
+    try{const u=await API.user.getUser();user=u.email||u.id||user}catch(e){}
+    $('proy').value=proy;
+    try{state=JSON.parse(localStorage.getItem(key())||'{}')}catch(e){}
+    render();say('Listo. '+Object.keys(cat.ensambles).length+' ensambles en el catálogo.');
+  }catch(e){say('No se pudo iniciar: '+e.message,1)}
+}
+
+// GUID -> runtimeId por modelo cargado
+async function build(){
+  if(built)return;
+  rt={};const models=await API.viewer.getModels();
+  const all=Object.values(cat.ensambles).flatMap(e=>e.p).concat(cat.ocultos);
+  for(const m of models){
+    const map={};
+    for(let i=0;i<all.length;i+=400){
+      const ch=all.slice(i,i+400),ids=await API.viewer.convertToObjectRuntimeIds(m.id,ch);
+      ch.forEach((g,k)=>{if(ids[k]!=null)map[g]=ids[k]});
+    }
+    if(Object.keys(map).length)rt[m.id]=map;
+  }
+  if(!Object.keys(rt).length)throw new Error('Ningún modelo cargado coincide con el catálogo.');
+  built=true;
+}
+
+async function paint(){
+  await build();
+  const groups={};
+  const add=(mid,rid,k)=>{((groups[k]=groups[k]||{})[mid]=groups[k][mid]||[]).push(rid)};
+  for(const mid in rt){
+    const map=rt[mid];
+    for(const g in cat.ensambles){
+      const st=(state[g]||{}).estado||'none',tiene=st!=='none';
+      const vis=modo==='all'||(modo==='con'&&tiene)||(modo==='sin'&&!tiene);
+      for(const p of cat.ensambles[g].p)if(map[p]!=null)add(mid,map[p],st+'|'+(vis?1:0));
+    }
+    for(const g of cat.ocultos)if(map[g]!=null)add(mid,map[g],'none|0');
+  }
+  for(const k in groups){
+    const [st,v]=k.split('|');
+    const mo=Object.entries(groups[k]).map(([modelId,objectRuntimeIds])=>({modelId,objectRuntimeIds}));
+    await API.viewer.setObjectState({modelObjectIds:mo},{color:COL[st],visible:v==='1'});
+  }
+}
+
+async function readSel(){
+  if(!API)return;
+  const s=await API.viewer.getSelection(),set=new Set();let ign=0;
+  for(const o of s){
+    const gs=await API.viewer.convertToObjectIds(o.modelId,o.objectRuntimeIds);
+    gs.forEach(g=>{const a=cat.ensambles[g]?g:p2a[g];a?set.add(a):ign++});
+  }
+  sel=[...set];
+  const w=sel.reduce((t,g)=>t+cat.ensambles[g].w,0);
+  $('sel').textContent=sel.length?`${sel.length} ensamble(s) · ${(w/1000).toFixed(2)} t · `+sel.slice(0,12).map(g=>cat.ensambles[g].m).join(', ')+(sel.length>12?'…':''):(ign?'La selección no pertenece a ningún ensamble (pernos u otros).':'Selecciona piezas en el modelo.');
+}
+
+function render(){
+  const tot=Object.values(cat.ensambles).reduce((t,e)=>t+e.w,0),acc={montado:[0,0],proceso:[0,0],none:[0,0]};
+  for(const g in cat.ensambles){const st=(state[g]||{}).estado||'none';acc[st][0]++;acc[st][1]+=cat.ensambles[g].w}
+  $('res').innerHTML=['montado','proceso','none'].map(k=>`<tr><td><span class="dot" style="background:${HEX[k]}"></span>${NOM[k]}</td><td>${acc[k][0]}</td><td>${(acc[k][1]/1000).toFixed(1)}</td><td>${(100*acc[k][1]/tot).toFixed(1)}%</td></tr>`).join('');
+  $('bSave').disabled=!dirty;$('bSave').textContent=dirty?`Guardar (${dirty} cambios)`:'Guardar';
+}
+
+async function marcar(est){
+  try{
+    await readSel();
+    if(!sel.length)return say('Selecciona primero piezas de un ensamble.',1);
+    const f=new Date().toISOString();
+    for(const g of sel){
+      if(est==='none')delete state[g];else state[g]={marca:cat.ensambles[g].m,peso_kg:cat.ensambles[g].w,estado:est,usuario:user,fecha:f};
+      dirty++;
+    }
+    render();await paint();say(`${sel.length} ensamble(s): ${NOM[est]}. Recuerda guardar.`);
+  }catch(e){say(e.message,1)}
+}
+function guardar(){
+  localStorage.setItem(key(),JSON.stringify(state));dirty=0;render();say('Guardado en el navegador (modo pruebas).');
+}
+const snap=()=>JSON.stringify({proyecto:proy,modelo:cat.modelo,actualizado:new Date().toISOString(),ensambles:state},null,1);
+
+$('bCol').onclick=async()=>{try{say('Coloreando…');await paint();say('Avance coloreado.')}catch(e){say(e.message,1)}};
+$('bQuit').onclick=async()=>{try{await API.viewer.setObjectState(undefined,{color:'reset'});say('Colores restablecidos.')}catch(e){say(e.message,1)}};
+$('modo').onclick=async e=>{
+  if(!e.target.dataset.m)return;modo=e.target.dataset.m;
+  [...$('modo').children].forEach(b=>b.classList.toggle('on',b===e.target));
+  try{await paint()}catch(x){say(x.message,1)}
+};
+document.querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>marcar(b.dataset.e));
+$('bSave').onclick=guardar;
+$('bExp').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([snap()],{type:'application/json'}));a.download='avance_'+proy+'.json';a.click()};
+$('bImp').onclick=()=>$('fImp').click();
+$('fImp').onchange=async e=>{
+  try{const j=JSON.parse(await e.target.files[0].text());Object.assign(state,j.ensambles||{});dirty++;render();await paint();say('JSON importado. Guarda para conservarlo.')}catch(x){say('Archivo no válido.',1)}
+};
+init();
+</script></body></html>

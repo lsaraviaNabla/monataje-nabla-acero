@@ -1,0 +1,7 @@
+{
+  "icon": "https://TU-USUARIO.github.io/TU-REPO/icon.png",
+  "title": { "en": "Avance de montaje", "es": "Avance de montaje" },
+  "url": "https://TU-USUARIO.github.io/TU-REPO/index.html",
+  "description": { "es": "Seguimiento de montaje por ensamble sobre el modelo 3D" },
+  "enabled": true
+}
