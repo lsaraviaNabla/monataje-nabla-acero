@@ -25,7 +25,7 @@ td{padding:5px 0;text-align:right}th:first-child,td:first-child{text-align:left}
 #msg{font-size:12px;color:#5a6a7e;margin-top:8px}.warn{color:#b3361b!important}
 a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;margin-right:12px}
 </style></head><body>
-<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v0.2</small></header>
+<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v0.3</small></header>
 <section>
  <label>PROYECTO</label><input id="proy" readonly>
  <label>ORIGEN DEL AVANCE</label>
@@ -36,9 +36,9 @@ a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;marg
  <div id="msg">Carga el modelo y presiona «Colorear avance».</div>
 </section>
 <section>
- <h2>ESTADO ACTUAL DE LOS ENSAMBLES</h2>
- <table><tr><th>Etapa</th><th>Ens.</th><th>Ton</th><th>% peso</th></tr>
- <tbody id="res"></tbody></table>
+ <h2>ESTADO REGISTRADO</h2>
+ <table><tr><th>Etapa</th><th>Ens.</th><th>Ton</th></tr><tbody id="res"></tbody></table>
+ <div style="font-size:12px;color:#5a6a7e;margin-top:6px">Todo lo que no tiene estado se muestra en gris.</div>
 </section>
 <section>
  <h2>ENSAMBLES SELECCIONADOS</h2>
@@ -51,90 +51,76 @@ a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;marg
 <pre id="diag" style="white-space:pre-wrap;font-size:11px;max-height:280px;overflow:auto;margin:8px 0 0"></pre></section>
 <script>
 const $=id=>document.getElementById(id);
-const COL={montado:{r:46,g:158,b:79,a:255},proceso:{r:242,g:140,b:40,a:255},none:{r:181,g:181,b:181,a:255}};
-const HEX={montado:'#2e9e4f',proceso:'#f28c28',none:'#b5b5b5'};
-const NOM={montado:'Montado',proceso:'En proceso',none:'Sin estado'};
-let API,cat,p2a={},idx={},fmt="raw",rt={},state={},sel=[],modo='all',dirty=0,user='desconocido',proy='proyecto',built=false;
+const RGB={montado:{r:46,g:158,b:79,a:255},proceso:{r:242,g:140,b:40,a:255},gris:{r:189,g:189,b:189,a:255}};
+const HEX={montado:'#2e9e4f',proceso:'#f28c28'},NOM={montado:'Montado',proceso:'En proceso'};
+let API,state={},sel=[],modo='all',dirty=0,user='desconocido',proy='proyecto',names={},wc={};
 const say=(t,w)=>{$('msg').textContent=t;$('msg').className=w?'warn':''};
 const key=()=>'avance:'+proy;
+const ASM=o=>/ASSEMBLY/i.test(o.class||''),FAST=o=>/FASTENER/i.test(o.class||''),conLetra=s=>/[A-Za-z]/.test(s||'');
+const selOf=l=>({modelObjectIds:Object.values(l.reduce((m,a)=>{(m[a.mid]=m[a.mid]||{modelId:a.mid,objectRuntimeIds:[],recursive:true}).objectRuntimeIds.push(a.rid);return m},{}))});
+function pesoDe(o){for(const ps of o.properties||[])for(const q of ps.properties||[])if(/^weightnet_kg$/i.test(q.name)){const v=parseFloat(String(q.value).replace(',','.'));if(isFinite(v))return v}return 0}
+async function props(mid,ids){const out=[];for(let i=0;i<ids.length;i+=500)out.push(...await API.viewer.getObjectProperties(mid,ids.slice(i,i+500)));return out}
 
-const B64='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$';
-function toUuid(g){if(g.length!==22)return g;let n=0n;for(const c of g)n=n*64n+BigInt(B64.indexOf(c));
-  const h=n.toString(16).padStart(32,'0');return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`}
-const canon=x=>x==null?undefined:(idx[x]||idx[String(x).toLowerCase()]);
 async function init(){
   try{
-    cat=await (await fetch('catalogo.json')).json();
-    for(const g in cat.ensambles)for(const p of cat.ensambles[g].p)p2a[p]=g;
-    for(const g of [...Object.keys(cat.ensambles),...Object.keys(p2a)]){idx[g]=g;idx[toUuid(g).toLowerCase()]=g}
-    API=await TrimbleConnectWorkspace.connect(window.parent,(ev,d)=>{if(ev==='viewer.onSelectionChanged')readSel()},30000);
-    try{const pr=await API.project.getProject();proy=pr.name||proy}catch(e){}
+    API=await TrimbleConnectWorkspace.connect(window.parent,(ev)=>{if(ev==='viewer.onSelectionChanged')readSel()},30000);
+    try{proy=(await API.project.getProject()).name||proy}catch(e){}
     try{const u=await API.user.getUser();user=u.email||u.id||user}catch(e){}
     $('proy').value=proy;
     try{state=JSON.parse(localStorage.getItem(key())||'{}')}catch(e){}
-    render();say('Listo. '+Object.keys(cat.ensambles).length+' ensambles en el catálogo.');
+    render();say('Listo. Selecciona piezas, asigna un estado y pulsa «Colorear avance».');
   }catch(e){say('No se pudo iniciar: '+e.message,1)}
 }
 
-// GUID -> runtimeId por modelo cargado
-async function build(){
-  if(built)return;
-  rt={};const models=await API.viewer.getModels();
-  const all=Object.values(cat.ensambles).flatMap(e=>e.p).concat(cat.ocultos);
-  for(const m of models){
-    const map={};
-    for(let i=0;i<all.length;i+=400){
-      const ch=all.slice(i,i+400),enc=g=>fmt==='uuid'?toUuid(g):g;
-      let ids=await API.viewer.convertToObjectRuntimeIds(m.id,ch.map(enc));
-      if(i===0&&fmt==='raw'&&!ids.some(x=>x!=null)){fmt='uuid';ids=await API.viewer.convertToObjectRuntimeIds(m.id,ch.map(enc))}
-      ch.forEach((g,k)=>{if(ids[k]!=null)map[g]=ids[k]});
+// Selección -> ensamble (por jerarquía del visor), con GUID, marca y peso (suma de subpiezas)
+async function resolver(){
+  const s=await API.viewer.getSelection(),roots={};let ign=0;
+  for(const o of s){
+    const ids=o.objectRuntimeIds||[];if(!ids.length)continue;
+    for(const p of await props(o.modelId,ids)){
+      if(FAST(p)){ign++;continue}
+      let rid=ASM(p)?p.id:null;
+      if(rid==null){
+        try{const pa=await API.viewer.getHierarchyParents(o.modelId,[p.id],4,false);
+          if(pa&&pa.length){const a=(await props(o.modelId,pa.map(x=>x.id))).find(ASM);if(a)rid=a.id}}catch(e){}
+      }
+      if(rid==null){ign++;continue}
+      roots[o.modelId+':'+rid]={mid:o.modelId,rid};
     }
-    if(Object.keys(map).length)rt[m.id]=map;
   }
-  if(!Object.keys(rt).length)throw new Error('Ningún modelo cargado coincide con el catálogo.');
-  built=true;
-}
-
-async function paint(){
-  await build();
-  await API.viewer.setObjectState(undefined,{color:"reset",visible:"reset"});
-  const groups={};
-  const add=(mid,rid,k)=>{((groups[k]=groups[k]||{})[mid]=groups[k][mid]||[]).push(rid)};
-  for(const mid in rt){
-    const map=rt[mid];
-    for(const g in cat.ensambles){
-      const st=(state[g]||{}).estado||'none',tiene=st!=='none';
-      const vis=modo==='all'||(modo==='con'&&tiene)||(modo==='sin'&&!tiene);
-      for(const p of cat.ensambles[g].p)if(map[p]!=null)add(mid,map[p],st+'|'+(vis?1:0));
+  const res=[];
+  for(const k in roots){
+    const {mid,rid}=roots[k];
+    if(!wc[k]){
+      const a=(await props(mid,[rid]))[0]||{};
+      const g=(await API.viewer.convertToObjectIds(mid,[rid]))[0];
+      let kids=[];try{kids=(await API.viewer.getHierarchyChildren(mid,[rid],4,true))||[]}catch(e){}
+      const kp=await props(mid,kids.map(x=>x.id));
+      const w=kp.filter(x=>!FAST(x)).reduce((t,x)=>t+pesoDe(x),0);
+      wc[k]={mid,rid,guid:g,marca:(a.product&&a.product.name)||'',w:Math.round(w*10)/10,n:kids.length,modelo:names[mid]||''};
     }
-    for(const g of cat.ocultos)if(map[g]!=null)add(mid,map[g],'none|0');
+    res.push(wc[k]);
   }
-  for(const k in groups){
-    const [st,v]=k.split('|');
-    const mo=Object.entries(groups[k]).map(([modelId,objectRuntimeIds])=>({modelId,objectRuntimeIds}));
-    await API.viewer.setObjectState({modelObjectIds:mo},{color:COL[st],visible:v==='1'});
-  }
+  return {res,ign};
 }
 
 async function readSel(){
   if(!API)return;
-  const s=await API.viewer.getSelection(),set=new Set();let ign=0;
-  for(const o of s){
-    let ids=[...(o.objectRuntimeIds||[])];
-    try{const pa=await API.viewer.getHierarchyParents(o.modelId,ids,4,false);ids=ids.concat((pa||[]).map(x=>x.id))}catch(e){}
-    const gs=await API.viewer.convertToObjectIds(o.modelId,ids);let hit=0;
-    gs.forEach(x=>{const g=canon(x),a=g&&(cat.ensambles[g]?g:p2a[g]);if(a){set.add(a);hit++}});
-    if(!hit)ign++;
-  }
-  sel=[...set];
-  const w=sel.reduce((t,g)=>t+cat.ensambles[g].w,0);
-  $('sel').textContent=sel.length?`${sel.length} ensamble(s) · ${(w/1000).toFixed(2)} t · `+sel.slice(0,12).map(g=>cat.ensambles[g].m).join(', ')+(sel.length>12?'…':''):(ign?'La selección no pertenece a ningún ensamble (pernos u otros).':'Selecciona piezas en el modelo.');
+  try{
+    if(!Object.keys(names).length)(await API.viewer.getModels()).forEach(m=>names[m.id]=m.name);
+    const {res,ign}=await resolver();
+    const bad=res.filter(a=>!conLetra(a.marca));
+    sel=res.filter(a=>conLetra(a.marca));
+    if(bad.length)try{await API.viewer.setObjectState(selOf(bad),{visible:false})}catch(e){}
+    const w=sel.reduce((t,a)=>t+a.w,0);
+    $('sel').textContent=sel.length?`${sel.length} ensamble(s) · ${(w/1000).toFixed(2)} t · `+sel.slice(0,12).map(a=>a.marca).join(', ')+(sel.length>12?'…':'')+(bad.length?` (${bad.length} sin marca válida, ocultos)`:''):(bad.length?'Marca sin número válido: excluida y oculta.':(ign?'La selección no pertenece a ningún ensamble (pernos u otros).':'Selecciona piezas en el modelo.'));
+  }catch(e){say(e.message,1)}
 }
 
 function render(){
-  const tot=Object.values(cat.ensambles).reduce((t,e)=>t+e.w,0),acc={montado:[0,0],proceso:[0,0],none:[0,0]};
-  for(const g in cat.ensambles){const st=(state[g]||{}).estado||'none';acc[st][0]++;acc[st][1]+=cat.ensambles[g].w}
-  $('res').innerHTML=['montado','proceso','none'].map(k=>`<tr><td><span class="dot" style="background:${HEX[k]}"></span>${NOM[k]}</td><td>${acc[k][0]}</td><td>${(acc[k][1]/1000).toFixed(1)}</td><td>${(100*acc[k][1]/tot).toFixed(1)}%</td></tr>`).join('');
+  const acc={montado:[0,0],proceso:[0,0]};
+  for(const g in state){const e=state[g];if(acc[e.estado]){acc[e.estado][0]++;acc[e.estado][1]+=e.peso_kg||0}}
+  $('res').innerHTML=['montado','proceso'].map(k=>`<tr><td><span class="dot" style="background:${HEX[k]}"></span>${NOM[k]}</td><td>${acc[k][0]}</td><td>${(acc[k][1]/1000).toFixed(1)}</td></tr>`).join('');
   $('bSave').disabled=!dirty;$('bSave').textContent=dirty?`Guardar (${dirty} cambios)`:'Guardar';
 }
 
@@ -143,20 +129,39 @@ async function marcar(est){
     await readSel();
     if(!sel.length)return say('Selecciona primero piezas de un ensamble.',1);
     const f=new Date().toISOString();
-    for(const g of sel){
-      if(est==='none')delete state[g];else state[g]={marca:cat.ensambles[g].m,peso_kg:cat.ensambles[g].w,estado:est,usuario:user,fecha:f};
+    for(const a of sel){
+      if(est==='none')delete state[a.guid];
+      else state[a.guid]={marca:a.marca,modelo:a.modelo,peso_kg:a.w,estado:est,usuario:user,fecha:f};
       dirty++;
     }
-    render();await paint();say(`${sel.length} ensamble(s): ${NOM[est]}. Recuerda guardar.`);
+    await API.viewer.setObjectState(selOf(sel),{color:est==='none'?RGB.gris:RGB[est]});
+    render();say(`${sel.length} ensamble(s): ${est==='none'?'sin estado':NOM[est]}. Recuerda guardar.`);
   }catch(e){say(e.message,1)}
 }
-function guardar(){
-  localStorage.setItem(key(),JSON.stringify(state));dirty=0;render();say('Guardado en el navegador (modo pruebas).');
-}
-const snap=()=>JSON.stringify({proyecto:proy,modelo:cat.modelo,actualizado:new Date().toISOString(),ensambles:state},null,1);
 
-$('bCol').onclick=async()=>{try{say('Coloreando…');await paint();say('Avance coloreado.')}catch(e){say(e.message,1)}};
-$('bQuit').onclick=async()=>{try{await API.viewer.setObjectState(undefined,{color:'reset'});say('Colores restablecidos.')}catch(e){say(e.message,1)}};
+async function paint(){
+  const ms=await API.viewer.getModels(),byName={};names={};
+  ms.forEach(m=>{names[m.id]=m.name;byName[m.name]=m.id});
+  await API.viewer.setObjectState(undefined,{color:'reset',visible:'reset'});
+  if(modo==='con')await API.viewer.setObjectState(undefined,{visible:false});
+  await API.viewer.setObjectState(undefined,{color:RGB.gris});
+  const pm={},grp={montado:[],proceso:[]};let falta=0;
+  for(const g in state){const mid=byName[state[g].modelo];if(!mid){falta++;continue}(pm[mid]=pm[mid]||[]).push(g)}
+  for(const mid in pm){
+    const ids=await API.viewer.convertToObjectRuntimeIds(mid,pm[mid]);
+    pm[mid].forEach((g,i)=>{if(ids[i]!=null)grp[state[g].estado].push({mid,rid:ids[i]});else falta++});
+  }
+  for(const est in grp)if(grp[est].length){
+    const st={color:RGB[est]};if(modo==='sin')st.visible=false;if(modo==='con')st.visible=true;
+    await API.viewer.setObjectState(selOf(grp[est]),st);
+  }
+  return falta;
+}
+function guardar(){localStorage.setItem(key(),JSON.stringify(state));dirty=0;render();say('Guardado en el navegador (modo pruebas).')}
+const snap=()=>JSON.stringify({proyecto:proy,actualizado:new Date().toISOString(),ensambles:state},null,1);
+
+$('bCol').onclick=async()=>{try{say('Coloreando…');const f=await paint();say(f?`Coloreado. ${f} ensamble(s) guardados no están cargados en el visor.`:'Avance coloreado.')}catch(e){say(e.message,1)}};
+$('bQuit').onclick=async()=>{try{await API.viewer.setObjectState(undefined,{color:'reset',visible:'reset'});say('Colores restablecidos.')}catch(e){say(e.message,1)}};
 $('modo').onclick=async e=>{
   if(!e.target.dataset.m)return;modo=e.target.dataset.m;
   [...$('modo').children].forEach(b=>b.classList.toggle('on',b===e.target));
@@ -166,28 +171,20 @@ document.querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>marcar(b.dataset.
 $('bSave').onclick=guardar;
 $('bExp').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([snap()],{type:'application/json'}));a.download='avance_'+proy+'.json';a.click()};
 $('bImp').onclick=()=>$('fImp').click();
-$('fImp').onchange=async e=>{
-  try{const j=JSON.parse(await e.target.files[0].text());Object.assign(state,j.ensambles||{});dirty++;render();await paint();say('JSON importado. Guarda para conservarlo.')}catch(x){say('Archivo no válido.',1)}
-};
+$('fImp').onchange=async e=>{try{const j=JSON.parse(await e.target.files[0].text());Object.assign(state,j.ensambles||{});dirty++;render();say('JSON importado. Guarda para conservarlo.')}catch(x){say('Archivo no válido.',1)}};
 $('bDiag').onclick=async()=>{
   const out=$('diag');
   try{
-    const s=await API.viewer.getSelection();
-    if(!s.length||!(s[0].objectRuntimeIds||[]).length){out.textContent='No hay nada seleccionado.';return}
-    const mid=s[0].modelId,id=s[0].objectRuntimeIds[0];
-    let t='Modelo: '+mid+'\nRuntime ID: '+id+'\nFormato de IDs: '+fmt+'\n';
-    const ex=await API.viewer.convertToObjectIds(mid,[id]);
-    t+='convertToObjectIds: '+JSON.stringify(ex)+'\n¿En catálogo?: '+(canon(ex[0])?'SÍ':'NO')+'\n';
-    const p=(await API.viewer.getObjectProperties(mid,[id]))[0]||{};
-    t+='Clase: '+(p.class||'')+'\nNombre: '+((p.product&&p.product.name)||'')+'\n';
-    (p.properties||[]).forEach(ps=>(ps.properties||[]).forEach(q=>{t+=ps.name+'.'+q.name+' = '+q.value+'\n'}));
-    try{
-      const pa=await API.viewer.getHierarchyParents(mid,[id],4,false);
-      t+='\nPadres (IDs): '+JSON.stringify((pa||[]).map(x=>x.id));
-      if(pa&&pa.length){const g=await API.viewer.convertToObjectIds(mid,pa.map(x=>x.id));
-        t+='\nGUID de padres: '+JSON.stringify(g)+'\n¿En catálogo?: '+g.map(x=>canon(x)?'SÍ':'NO').join(', ')}
-    }catch(e){t+='\nPadres: error '+e.message}
-    const ms=await API.viewer.getModels();t+='\nModelos cargados: '+JSON.stringify(ms.map(m=>m.name||m.id));
+    await readSel();const {res,ign}=await resolver();
+    let t='Ensambles detectados: '+res.length+' | ignorados: '+ign+'\n';
+    for(const a of res){
+      t+='\n'+a.marca+'\n GUID: '+a.guid+'\n Archivo: '+a.modelo+'\n Piezas hijas: '+a.n+'\n Peso (suma): '+a.w+' kg\n';
+      const kids=await API.viewer.getHierarchyChildren(a.mid,[a.rid],4,true);
+      if(kids&&kids.length){const k=(await props(a.mid,[kids[0].id]))[0]||{};
+        t+=' Primera pieza: '+(k.class||'')+'\n';
+        (k.properties||[]).forEach(ps=>(ps.properties||[]).forEach(q=>{t+='  '+ps.name+'.'+q.name+' = '+q.value+'\n'}));}
+      break;
+    }
     out.textContent=t;
   }catch(e){out.textContent='Error: '+(e.message||e)}
 };
