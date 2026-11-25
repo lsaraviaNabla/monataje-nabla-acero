@@ -25,7 +25,7 @@ td{padding:5px 0;text-align:right}th:first-child,td:first-child{text-align:left}
 #msg{font-size:12px;color:#5a6a7e;margin-top:8px}.warn{color:#b3361b!important}
 a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;margin-right:12px}
 </style></head><body>
-<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v0.6</small></header>
+<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v0.7</small></header>
 <section>
  <label>MODO</label>
  <select id="modoSel"><option value="marcar">Marcado de avance</option><option value="ver">Visualización de avance</option></select>
@@ -52,7 +52,7 @@ a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;marg
 const $=id=>document.getElementById(id);
 const RGB={montado:{r:46,g:158,b:79,a:255},proceso:{r:242,g:140,b:40,a:255},gris:{r:189,g:189,b:189,a:255}};
 const HEX={montado:'#2e9e4f',proceso:'#f28c28'},NOM={montado:'Montado',proceso:'En proceso'};
-let API,state={},sel=[],modo='all',rol='marcar',dirty=0,user='desconocido',proy='proyecto',names={},wc={},tok=null,esperaTok=null,baseTC=null,carpetaId=null,pid=null,info=null;
+let API,state={},sel=[],modo='all',rol='marcar',dirty=0,user='desconocido',proy='proyecto',names={},wc={},tok=null,esperaTok=null,baseTC=null,carpetaId=null,pid=null,info=null,cargado=false,isolado=false;
 const CARPETA='5_FAB/5.5_DB_REGISTROS',ARCH='avance_actual.json';
 const norm=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
 const say=(t,w)=>{$('msg').textContent=t;$('msg').className=w?'warn':''};
@@ -62,6 +62,11 @@ const selOf=l=>({modelObjectIds:Object.values(l.reduce((m,a)=>{const o=m[a.mid]=
 function pesoDe(o){for(const ps of o.properties||[])for(const q of ps.properties||[])if(/^weightnet_kg$/i.test(q.name)){const v=parseFloat(String(q.value).replace(',','.'));if(isFinite(v))return v}return 0}
 async function props(mid,ids){const out=[];for(let i=0;i<ids.length;i+=500)out.push(...await API.viewer.getObjectProperties(mid,ids.slice(i,i+500)));return out}
 
+async function todosIds(){return ((await API.viewer.getObjects())||[]).map(m=>({modelId:m.modelId,objectRuntimeIds:(m.objects||[]).map(o=>o.id)}))}
+async function mostrarTodo(){
+  try{await API.viewer.setObjectState({modelObjectIds:await todosIds()},{visible:true})}catch(e){}
+  await API.viewer.setObjectState(undefined,{visible:'reset'});isolado=false;
+}
 async function init(){
   try{
     API=await TrimbleConnectWorkspace.connect(window.parent,(ev,d)=>{if(ev==='viewer.onSelectionChanged')readSel();if(ev==='extension.accessToken'){const t=d&&d.data!==undefined?d.data:d;if(t&&t!=='pending'&&t!=='denied'){tok=t;if(esperaTok){esperaTok(t);esperaTok=null}}}},30000);
@@ -69,7 +74,7 @@ async function init(){
     try{const u=await API.user.getUser();user=u.email||u.id||user}catch(e){}
     try{state=JSON.parse(localStorage.getItem(key())||'{}')}catch(e){}
     say('Leyendo avance guardado en Trimble Connect…');
-    try{const e=await leerTC();if(e)state=e}catch(err){say('No se pudo leer '+CARPETA+': '+err.message+' Se usa la copia local.',1)}
+    try{const e=await leerTC();cargado=true;if(e)state=e}catch(err){say('No se pudo leer '+CARPETA+': '+err.message+' Se usa la copia local.',1)}
     render();aplicarRol();if(!$('msg').classList.contains('warn'))say('Listo. '+Object.keys(state).length+' ensambles con estado registrado.');
   }catch(e){say('No se pudo iniciar: '+e.message,1)}
 }
@@ -104,13 +109,41 @@ async function carpeta(){
   }
   return carpetaId=cur;
 }
-async function leerTC(){
+async function leerTexto(nombre){
   await carpeta();
-  const a=((await tc('/folders/'+carpetaId+'/items'))||[]).find(x=>String(x.type).toUpperCase()==='FILE'&&norm(x.name)===norm(ARCH));
+  const a=((await tc('/folders/'+carpetaId+'/items'))||[]).find(x=>String(x.type).toUpperCase()==='FILE'&&norm(x.name)===norm(nombre));
   if(!a)return null;
   const du=await tc('/files/fs/'+a.id+'/downloadurl'),r=await fetch(du.url||du.downloadUrl||du);
   if(!r.ok)throw new Error('No se pudo descargar '+a.name+' ('+r.status+').');
-  return (await r.json()).ensambles||{};
+  return r.text();
+}
+async function leerTC(){const t=await leerTexto(ARCH);return t?(JSON.parse(t).ensambles||{}):null}
+async function tcPost(ruta,body){
+  const r=await fetch(baseTC+ruta,{method:'POST',headers:{Authorization:'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+  return {s:r.status,t:await r.text()};
+}
+// Subida: iniciar -> enviar contenido -> confirmar -> verificar leyendo de vuelta
+async function escribirTC(nombre,texto,log){
+  await carpeta();
+  const L=m=>{if(log)log.push(m)};
+  const ini=await tcPost('/files/fs/initiate?parentId='+carpetaId+'&parentType=FOLDER',{parentId:carpetaId,parentType:'FOLDER',name:nombre});
+  L('1. initiate -> '+ini.s);
+  if(ini.s===401)tok=null;
+  if(ini.s<200||ini.s>=300)throw new Error(ini.s===403?'tu usuario no tiene permiso de escritura en '+CARPETA:'initiate '+ini.s+' '+ini.t.slice(0,200));
+  const j=JSON.parse(ini.t);
+  const put=await fetch(j.uploadURL,{method:'PUT',body:new Blob([texto])});
+  L('2. envío del contenido -> '+put.status);
+  if(!put.ok)throw new Error('no se pudo enviar el contenido ('+put.status+')');
+  for(const [ruta,body,et] of [['/files/fs/commit?uploadId='+j.uploadId,{},'query'],['/files/fs/commit',{uploadId:j.uploadId},'cuerpo']]){
+    const c=await tcPost(ruta,body);L('3. commit ('+et+') -> '+c.s+' '+c.t.slice(0,160));
+    if(c.s>=200&&c.s<300)break;
+  }
+  for(let k=0;k<4;k++){
+    await new Promise(r=>setTimeout(r,1500));
+    try{const t=await leerTexto(nombre);if(t===texto){L('4. verificado: el archivo en la carpeta es idéntico');return true}}catch(e){}
+  }
+  L('4. no se pudo verificar el archivo en la carpeta');
+  throw new Error('la subida no se pudo verificar');
 }
 
 // Selección -> ensamble (por jerarquía del visor), con GUID, marca y peso (suma de subpiezas)
@@ -187,8 +220,8 @@ async function marcar(est){
 async function paint(){
   const ms=await API.viewer.getModels(),byName={};names={};
   ms.forEach(m=>{names[m.id]=m.name;byName[m.name]=m.id});
+  if(isolado)await mostrarTodo();
   await API.viewer.setObjectState(undefined,{color:'reset',visible:'reset'});
-  if(modo==='con')await API.viewer.setObjectState(undefined,{visible:false});
   await API.viewer.setObjectState(undefined,{color:RGB.gris});
   const pm={},grp={montado:[]},known={};let falta=0;
   Object.values(wc).forEach(a=>known[a.guid]=a);
@@ -207,8 +240,21 @@ async function paint(){
     }
   }
   for(const est in grp)if(grp[est].length){
-    const st={color:RGB[est]};if(modo==='sin')st.visible=false;if(modo==='con')st.visible=true;
+    const st={color:RGB[est]};if(modo==='sin')st.visible=false;
     await API.viewer.setObjectState(selOf(grp[est]),st);
+  }
+  if(modo==='con'){
+    if(!grp.montado.length)await API.viewer.setObjectState(undefined,{visible:false});
+    else{
+      const sl=selOf(grp.montado).modelObjectIds;let ok=false;
+      try{ok=await API.viewer.isolateEntities(sl.map(g=>({modelId:g.modelId,entityIds:g.objectRuntimeIds})))}catch(e){ok=false}
+      if(ok===false){
+        const ver={};sl.forEach(g=>g.objectRuntimeIds.forEach(id=>ver[g.modelId+':'+id]=1));
+        const ocultar=(await todosIds()).map(g=>({modelId:g.modelId,objectRuntimeIds:g.objectRuntimeIds.filter(id=>!ver[g.modelId+':'+id])})).filter(g=>g.objectRuntimeIds.length);
+        if(ocultar.length)await API.viewer.setObjectState({modelObjectIds:ocultar},{visible:false});
+      }
+    }
+    isolado=true;
   }
   return falta;
 }
@@ -218,7 +264,12 @@ function aplicarRol(){
   document.querySelectorAll('[data-e]').forEach(b=>b.disabled=!m);
   document.querySelectorAll('#modo button,#bCol,#bQuit').forEach(b=>b.disabled=m);
 }
-function guardar(){localStorage.setItem(key(),JSON.stringify(state));dirty=0;render();say('Guardado en este equipo. La escritura en Trimble se activa en el siguiente paso.')}
+async function guardar(){
+  if(!cargado)return say('No se pudo leer el avance de Trimble; no se guarda para no sobrescribirlo. Recarga e inténtalo de nuevo.',1);
+  localStorage.setItem(key(),JSON.stringify(state));
+  try{say('Guardando en Trimble Connect…');await escribirTC(ARCH,snap());dirty=0;render();say('Guardado en Trimble Connect ('+CARPETA+').')}
+  catch(e){render();say('Se guardó en este equipo, pero no en Trimble: '+e.message,1)}
+}
 const snap=()=>JSON.stringify({proyecto:proy,actualizado:new Date().toISOString(),ensambles:state},null,1);
 
 $('modoSel').onchange=async()=>{
@@ -228,7 +279,7 @@ $('modoSel').onchange=async()=>{
   try{say('Aplicando colores…');const f=await paint();say(f?`${f} ensamble(s) guardados no se encontraron en el visor.`:(rol==='marcar'?'Modo marcado: selecciona piezas y asigna estado.':'Modo visualización: solo lectura.'))}catch(e){say(e.message,1)}
 };
 $('bCol').onclick=async()=>{try{say('Coloreando…');if(!dirty){try{const e=await leerTC();if(e){state=e;render()}}catch(x){}}const f=await paint();say(f?`Coloreado. ${f} ensamble(s) guardados no están cargados en el visor.`:'Avance coloreado.')}catch(e){say(e.message,1)}};
-$('bQuit').onclick=async()=>{try{await API.viewer.setObjectState(undefined,{color:'reset',visible:'reset'});say('Colores restablecidos.')}catch(e){say(e.message,1)}};
+$('bQuit').onclick=async()=>{try{if(isolado)await mostrarTodo();await API.viewer.setObjectState(undefined,{color:'reset',visible:'reset'});say('Colores restablecidos.')}catch(e){say(e.message,1)}};
 $('modo').onclick=async e=>{
   if(!e.target.dataset.m)return;modo=e.target.dataset.m;
   [...$('modo').children].forEach(b=>b.classList.toggle('on',b===e.target));
@@ -240,12 +291,12 @@ $('bExp').onclick=()=>{const a=document.createElement('a');a.href=URL.createObje
 $('bImp').onclick=()=>$('fImp').click();
 $('fImp').onchange=async e=>{try{const j=JSON.parse(await e.target.files[0].text());Object.assign(state,j.ensambles||{});dirty++;render();say('JSON importado. Guarda para conservarlo.')}catch(x){say('Archivo no válido.',1)}};
 $('bProbe').onclick=async()=>{
-  const out=$('diag');out.textContent='Probando…';
+  const out=$('diag'),log=[];out.textContent='Probando…';
   try{
-    await carpeta();
-    const r=await fetch(baseTC+'/files/fs/initiate?parentId='+carpetaId+'&parentType=FOLDER',{method:'POST',headers:{Authorization:'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({parentId:carpetaId,parentType:'FOLDER',name:'prueba_escritura.json'})});
-    out.textContent='Carpeta: '+CARPETA+' ('+carpetaId+')\nBase: '+baseTC+'\nPOST /files/fs/initiate -> '+r.status+'\n'+(await r.text()).slice(0,1500);
-  }catch(e){out.textContent='Error: '+(e.message||e)}
+    const txt=JSON.stringify({prueba:new Date().toISOString()});
+    await escribirTC('prueba_escritura.json',txt,log);
+    out.textContent='ESCRITURA OK en '+CARPETA+'\n'+log.join('\n');
+  }catch(e){out.textContent='FALLÓ: '+(e.message||e)+'\n'+log.join('\n')}
 };
 $('bDiag').onclick=async()=>{
   const out=$('diag');
