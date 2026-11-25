@@ -1,7 +1,7 @@
 {
-  "icon": "https://lsaraviaNabla/monataje-nabla-acero/icon.png",
+  "icon": "https://lsaravianabla.github.io/monataje-nabla-acero/icon.png",
   "title": { "en": "Avance de montaje", "es": "Avance de montaje" },
-  "url": "https://lsaraviaNabla/monataje-nabla-acero/index.html",
+  "url": "https://lsaravianabla.github.io/monataje-nabla-acero/index.html",
   "description": { "es": "Seguimiento de montaje por ensamble sobre el modelo 3D" },
   "enabled": true
 }
