@@ -25,7 +25,7 @@ td{padding:5px 0;text-align:right}th:first-child,td:first-child{text-align:left}
 #msg{font-size:12px;color:#5a6a7e;margin-top:8px}.warn{color:#b3361b!important}
 a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;margin-right:12px}
 </style></head><body>
-<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v0.5</small></header>
+<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v0.6</small></header>
 <section>
  <label>MODO</label>
  <select id="modoSel"><option value="marcar">Marcado de avance</option><option value="ver">Visualización de avance</option></select>
@@ -42,7 +42,7 @@ a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;marg
 <section>
  <h2>ENSAMBLES SELECCIONADOS</h2>
  <div id="sel">Selecciona piezas en el modelo.</div>
- <div class="row"><button class="btn o" data-e="proceso">En proceso</button><button class="btn g" data-e="montado">Montado</button><button class="btn" data-e="none">Quitar estado</button></div>
+ <div class="row"><button class="btn g" data-e="montado">Montado</button><button class="btn" data-e="none">Quitar estado</button></div>
  <div class="row"><button class="btn pri" id="bSave" disabled>Guardar</button></div>
  <div style="margin-top:10px"><a class="lnk" id="bExp">Exportar JSON</a><a class="lnk" id="bImp">Importar JSON</a><input type="file" id="fImp" accept=".json" hidden></div>
 </section>
@@ -58,7 +58,7 @@ const norm=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLo
 const say=(t,w)=>{$('msg').textContent=t;$('msg').className=w?'warn':''};
 const key=()=>'avance:'+proy;
 const ASM=o=>/ASSEMBLY/i.test(o.class||''),FAST=o=>/FASTENER/i.test(o.class||''),conLetra=s=>/[A-Za-z]/.test(s||'');
-const selOf=l=>({modelObjectIds:Object.values(l.reduce((m,a)=>{(m[a.mid]=m[a.mid]||{modelId:a.mid,objectRuntimeIds:[],recursive:true}).objectRuntimeIds.push(a.rid);return m},{}))});
+const selOf=l=>({modelObjectIds:Object.values(l.reduce((m,a)=>{const o=m[a.mid]=m[a.mid]||{modelId:a.mid,objectRuntimeIds:[]};for(const x of (a.ids||[a.rid]))o.objectRuntimeIds.push(x);return m},{}))});
 function pesoDe(o){for(const ps of o.properties||[])for(const q of ps.properties||[])if(/^weightnet_kg$/i.test(q.name)){const v=parseFloat(String(q.value).replace(',','.'));if(isFinite(v))return v}return 0}
 async function props(mid,ids){const out=[];for(let i=0;i<ids.length;i+=500)out.push(...await API.viewer.getObjectProperties(mid,ids.slice(i,i+500)));return out}
 
@@ -138,7 +138,7 @@ async function resolver(){
       let kids=[];try{kids=(await API.viewer.getHierarchyChildren(mid,[rid],4,true))||[]}catch(e){}
       const kp=await props(mid,kids.map(x=>x.id));
       const w=kp.filter(x=>!FAST(x)).reduce((t,x)=>t+pesoDe(x),0);
-      wc[k]={mid,rid,guid:g,marca:(a.product&&a.product.name)||'',w:Math.round(w*10)/10,n:kids.length,modelo:names[mid]||''};
+      wc[k]={mid,rid,guid:g,marca:(a.product&&a.product.name)||'',w:Math.round(w*10)/10,n:kids.length,modelo:names[mid]||'',ids:[rid,...kids.map(x=>x.id)]};
     }
     res.push(wc[k]);
   }
@@ -154,14 +154,14 @@ async function readSel(){
     sel=res.filter(a=>conLetra(a.marca));
     if(bad.length)try{await API.viewer.setObjectState(selOf(bad),{visible:false})}catch(e){}
     const w=sel.reduce((t,a)=>t+a.w,0);
-    $('sel').textContent=sel.length?`${sel.length} ensamble(s) · ${(w/1000).toFixed(2)} t · `+sel.slice(0,12).map(a=>a.marca).join(', ')+(sel.length>12?'…':'')+(bad.length?` (${bad.length} sin marca válida, ocultos)`:''):(bad.length?'Marca sin número válido: excluida y oculta.':(ign?'La selección no pertenece a ningún ensamble (pernos u otros).':'Selecciona piezas en el modelo.'));
+    $('sel').textContent=sel.length?`${sel.length} ensamble(s) · ${(w/1000).toFixed(2)} t · `+sel.slice(0,12).map(a=>a.marca+(state[a.guid]?' ✓':'')).join(', ')+(sel.length>12?'…':'')+(sel.some(a=>state[a.guid])?' (✓ = ya montado)':'')+(bad.length?` (${bad.length} sin marca válida, ocultos)`:''):(bad.length?'Marca sin número válido: excluida y oculta.':(ign?'La selección no pertenece a ningún ensamble (pernos u otros).':'Selecciona piezas en el modelo.'));
   }catch(e){say(e.message,1)}
 }
 
 function render(){
-  const acc={montado:[0,0],proceso:[0,0]};
+  const acc={montado:[0,0]};
   for(const g in state){const e=state[g];if(acc[e.estado]){acc[e.estado][0]++;acc[e.estado][1]+=e.peso_kg||0}}
-  $('res').innerHTML=['montado','proceso'].map(k=>`<tr><td><span class="dot" style="background:${HEX[k]}"></span>${NOM[k]}</td><td>${acc[k][0]}</td><td>${(acc[k][1]/1000).toFixed(1)}</td></tr>`).join('');
+  $('res').innerHTML=['montado'].map(k=>`<tr><td><span class="dot" style="background:${HEX[k]}"></span>${NOM[k]}</td><td>${acc[k][0]}</td><td>${(acc[k][1]/1000).toFixed(1)}</td></tr>`).join('');
   $('bSave').disabled=!dirty||rol!=='marcar';$('bSave').textContent=dirty?`Guardar (${dirty} cambios)`:'Guardar';
 }
 
@@ -170,34 +170,41 @@ async function marcar(est){
   try{
     await readSel();
     if(!sel.length)return say('Selecciona primero piezas de un ensamble.',1);
-    const f=new Date().toISOString();
+    const f=new Date().toISOString(),ya=[];
     for(const a of sel){
-      if(est==='none')delete state[a.guid];
-      else state[a.guid]={marca:a.marca,modelo:a.modelo,peso_kg:a.w,estado:est,usuario:user,fecha:f};
-      dirty++;
+      if(est==='none'){if(state[a.guid]){delete state[a.guid];dirty++}}
+      else if(state[a.guid]&&state[a.guid].estado==='montado')ya.push(a);
+      else{state[a.guid]={marca:a.marca,modelo:a.modelo,peso_kg:a.w,estado:'montado',usuario:user,fecha:f};dirty++}
     }
-    await API.viewer.setObjectState(selOf(sel),{color:est==='none'?RGB.gris:RGB[est]});
-    render();say(`${sel.length} ensamble(s): ${est==='none'?'sin estado':NOM[est]}. Recuerda guardar.`);
+    await API.viewer.setObjectState(selOf(sel),{color:est==='none'?RGB.gris:RGB.montado});
+    render();readSel();
+    const nuevos=sel.length-ya.length;
+    if(est==='none')say(`${sel.length} ensamble(s) sin estado. Recuerda guardar.`);
+    else if(ya.length){const e=state[ya[0].guid];say(`Ya estaba marcado como montado: ${ya.slice(0,6).map(x=>x.marca).join(', ')}${ya.length>6?'…':''} (${(e.fecha||'').slice(0,10)}, ${e.usuario}).`+(nuevos?` Se marcaron ${nuevos} nuevo(s).`:''),1)}
+    else say(`${nuevos} ensamble(s) marcados como montado. Recuerda guardar.`);
   }catch(e){say(e.message,1)}
 }
-
 async function paint(){
   const ms=await API.viewer.getModels(),byName={};names={};
   ms.forEach(m=>{names[m.id]=m.name;byName[m.name]=m.id});
   await API.viewer.setObjectState(undefined,{color:'reset',visible:'reset'});
   if(modo==='con')await API.viewer.setObjectState(undefined,{visible:false});
   await API.viewer.setObjectState(undefined,{color:RGB.gris});
-  const pm={},grp={montado:[],proceso:[]},known={};let falta=0;
+  const pm={},grp={montado:[]},known={};let falta=0;
   Object.values(wc).forEach(a=>known[a.guid]=a);
   for(const g in state){
     const e=state[g];if(!grp[e.estado])continue;
-    if(known[g]){grp[e.estado].push({mid:known[g].mid,rid:known[g].rid});continue}
+    if(known[g]){grp[e.estado].push(known[g]);continue}
     const mid=byName[e.modelo];if(!mid){falta++;continue}(pm[mid]=pm[mid]||[]).push(g);
   }
   for(const mid in pm){
     let ids=await API.viewer.convertToObjectRuntimeIds(mid,pm[mid]);
     ids=(ids||[]).map(x=>Array.isArray(x)?x[0]:(x&&typeof x==='object'?(x.id??x.runtimeId):x));
-    pm[mid].forEach((g,i)=>{const r=ids[i];if(Number.isInteger(r)&&r>=0)grp[state[g].estado].push({mid,rid:r});else falta++});
+    for(let i=0;i<pm[mid].length;i++){
+      const g=pm[mid][i],r=ids[i];
+      if(Number.isInteger(r)&&r>=0){let k=[];try{k=((await API.viewer.getHierarchyChildren(mid,[r],4,true))||[]).map(x=>x.id)}catch(e){}grp[state[g].estado].push({mid,rid:r,ids:[r,...k]})}
+      else falta++;
+    }
   }
   for(const est in grp)if(grp[est].length){
     const st={color:RGB[est]};if(modo==='sin')st.visible=false;if(modo==='con')st.visible=true;
@@ -236,7 +243,7 @@ $('bProbe').onclick=async()=>{
   const out=$('diag');out.textContent='Probando…';
   try{
     await carpeta();
-    const r=await fetch(baseTC+'/files/fs/initiate?parentId='+carpetaId+'&parentType=FOLDER',{method:'POST',headers:{Authorization:'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({name:'prueba_escritura.json'})});
+    const r=await fetch(baseTC+'/files/fs/initiate?parentId='+carpetaId+'&parentType=FOLDER',{method:'POST',headers:{Authorization:'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({parentId:carpetaId,parentType:'FOLDER',name:'prueba_escritura.json'})});
     out.textContent='Carpeta: '+CARPETA+' ('+carpetaId+')\nBase: '+baseTC+'\nPOST /files/fs/initiate -> '+r.status+'\n'+(await r.text()).slice(0,1500);
   }catch(e){out.textContent='Error: '+(e.message||e)}
 };
