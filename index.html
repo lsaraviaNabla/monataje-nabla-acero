@@ -25,7 +25,7 @@ td{padding:5px 0;text-align:right}th:first-child,td:first-child{text-align:left}
 #msg{font-size:12px;color:#5a6a7e;margin-top:8px}.warn{color:#b3361b!important}
 a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;margin-right:12px}
 </style></head><body>
-<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v0.9</small></header>
+<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v1.0</small></header>
 <section>
  <label>MODO</label>
  <select id="modoSel"><option value="marcar">Marcado de avance</option><option value="ver">Visualización de avance</option></select>
@@ -44,7 +44,6 @@ a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;marg
  <div id="sel">Selecciona piezas en el modelo.</div>
  <div class="row"><button class="btn g" data-e="montado">Montado</button><button class="btn" data-e="none">Quitar estado</button></div>
  <div class="row"><button class="btn pri" id="bSave" disabled>Guardar</button></div>
- <div style="margin-top:10px"><a class="lnk" id="bExp">Exportar JSON</a><a class="lnk" id="bImp">Importar JSON</a><input type="file" id="fImp" accept=".json" hidden></div>
 </section>
 <section><h2>DIAGNÓSTICO</h2><div class="row" style="margin-top:0"><button class="btn" id="bDiag">Datos de la selección</button><button class="btn" id="bPerm">Probar permisos</button></div>
 <pre id="diag" style="white-space:pre-wrap;font-size:11px;max-height:280px;overflow:auto;margin:8px 0 0"></pre></section>
@@ -67,6 +66,18 @@ async function mostrarTodo(){
   try{await API.viewer.setObjectState({modelObjectIds:await todosIds()},{visible:true})}catch(e){}
   await API.viewer.setObjectState(undefined,{visible:'reset'});isolado=false;
 }
+async function permisoEscritura(){
+  await carpeta();
+  const r=await fetch(baseTC+'/folders/'+carpetaId+'/permissions',{headers:{Authorization:'Bearer '+tok}});
+  if(!r.ok)throw new Error('permisos '+r.status);
+  const j=await r.json(),ids=new Set(),nombres=new Set();
+  const add=u=>{if(!u)return;[u.id,u.tiduuid].forEach(x=>x&&ids.add(String(x)));if(u.email)ids.add(String(u.email).toLowerCase());
+    const n=((u.firstName||'')+' '+(u.lastName||'')).trim().toLowerCase();if(n)nombres.add(n)};
+  try{add(await API.user.getUser())}catch(e){}
+  try{const x=await fetch(baseTC+'/users/me',{headers:{Authorization:'Bearer '+tok}});if(x.ok)add(await x.json())}catch(e){}
+  const ok=p=>/FULL|WRITE|EDIT|ADMIN/i.test(p||'');
+  return (j.permissions||[]).some(p=>p.type==='USER'&&ok(p.permission)&&(ids.has(String(p.id))||nombres.has(String(p.name||'').trim().toLowerCase())));
+}
 async function init(){
   try{
     API=await TrimbleConnectWorkspace.connect(window.parent,(ev,d)=>{if(ev==='viewer.onSelectionChanged')readSel();if(ev==='extension.accessToken'){const t=d&&d.data!==undefined?d.data:d;if(t&&t!=='pending'&&t!=='denied'){tok=t;if(esperaTok){esperaTok(t);esperaTok=null}}}},30000);
@@ -76,11 +87,15 @@ async function init(){
     say('Leyendo avance guardado en Trimble Connect…');
     try{const e=await leerTC();cargado=true;if(e)state=e}catch(err){say('No se pudo leer '+CARPETA+': '+err.message+' Se usa la copia local.',1)}
     try{
-      const t=await leerTexto('editores.json');
-      if(t){const lista=(JSON.parse(t).editores||[]).map(x=>String(x).trim().toLowerCase());
-        puedeMarcar=lista.includes(String(user).trim().toLowerCase());
-        if(!puedeMarcar)avisoRol='Tu usuario solo puede visualizar el avance.'}
-    }catch(err){puedeMarcar=false;avisoRol='No se pudo verificar tu permiso de marcado; solo visualización.'}
+      puedeMarcar=await permisoEscritura();
+      if(!puedeMarcar)avisoRol='Tu usuario solo puede visualizar el avance.';
+    }catch(err){
+      try{
+        const t=await leerTexto('editores.json');
+        puedeMarcar=!!t&&(JSON.parse(t).editores||[]).map(x=>String(x).trim().toLowerCase()).includes(String(user).trim().toLowerCase());
+        if(!puedeMarcar)avisoRol='Tu usuario solo puede visualizar el avance.';
+      }catch(e2){puedeMarcar=false;avisoRol='No se pudo verificar tu permiso de marcado; solo visualización.'}
+    }
     if(!puedeMarcar){rol='ver';$('modoSel').value='ver';$('modoSel').querySelector('option[value="marcar"]').disabled=true;try{await paint()}catch(e){}}
     render();aplicarRol();if(avisoRol)say(avisoRol,!puedeMarcar&&avisoRol.startsWith('No se pudo'));else if(!$('msg').classList.contains('warn'))say('Listo. '+Object.keys(state).length+' ensambles con estado registrado.');
   }catch(e){say('No se pudo iniciar: '+e.message,1)}
@@ -293,9 +308,6 @@ $('modo').onclick=async e=>{
 };
 document.querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>marcar(b.dataset.e));
 $('bSave').onclick=guardar;
-$('bExp').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([snap()],{type:'application/json'}));a.download='avance_'+proy+'.json';a.click()};
-$('bImp').onclick=()=>$('fImp').click();
-$('fImp').onchange=async e=>{try{const j=JSON.parse(await e.target.files[0].text());Object.assign(state,j.ensambles||{});dirty++;render();say('JSON importado. Guarda para conservarlo.')}catch(x){say('Archivo no válido.',1)}};
 $('bPerm').onclick=async()=>{
   const out=$('diag');out.textContent='Consultando permisos…';
   try{
