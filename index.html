@@ -25,7 +25,7 @@ td{padding:5px 0;text-align:right}th:first-child,td:first-child{text-align:left}
 #msg{font-size:12px;color:#5a6a7e;margin-top:8px}.warn{color:#b3361b!important}
 a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;margin-right:12px}
 </style></head><body>
-<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v0.8</small></header>
+<header><h1>Avance de montaje</h1><small>NABLA Acero · seguimiento por ensamble · v0.9</small></header>
 <section>
  <label>MODO</label>
  <select id="modoSel"><option value="marcar">Marcado de avance</option><option value="ver">Visualización de avance</option></select>
@@ -46,13 +46,13 @@ a.lnk{color:#16345f;font-size:12px;cursor:pointer;text-decoration:underline;marg
  <div class="row"><button class="btn pri" id="bSave" disabled>Guardar</button></div>
  <div style="margin-top:10px"><a class="lnk" id="bExp">Exportar JSON</a><a class="lnk" id="bImp">Importar JSON</a><input type="file" id="fImp" accept=".json" hidden></div>
 </section>
-<section><h2>DIAGNÓSTICO</h2><div class="row" style="margin-top:0"><button class="btn" id="bDiag">Datos de la selección</button></div>
+<section><h2>DIAGNÓSTICO</h2><div class="row" style="margin-top:0"><button class="btn" id="bDiag">Datos de la selección</button><button class="btn" id="bPerm">Probar permisos</button></div>
 <pre id="diag" style="white-space:pre-wrap;font-size:11px;max-height:280px;overflow:auto;margin:8px 0 0"></pre></section>
 <script>
 const $=id=>document.getElementById(id);
 const RGB={montado:{r:46,g:158,b:79,a:255},proceso:{r:242,g:140,b:40,a:255},gris:{r:189,g:189,b:189,a:255}};
 const HEX={montado:'#2e9e4f',proceso:'#f28c28'},NOM={montado:'Montado',proceso:'En proceso'};
-let API,state={},sel=[],modo='all',rol='marcar',dirty=0,user='desconocido',proy='proyecto',names={},wc={},tok=null,esperaTok=null,baseTC=null,carpetaId=null,pid=null,info=null,cargado=false,isolado=false;
+let API,state={},sel=[],modo='all',rol='marcar',dirty=0,user='desconocido',proy='proyecto',names={},wc={},tok=null,esperaTok=null,baseTC=null,carpetaId=null,pid=null,info=null,cargado=false,isolado=false,puedeMarcar=true,avisoRol='';
 const CARPETA='5_FAB/5.5_DB_REGISTROS',ARCH='avance_actual.json';
 const norm=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
 const say=(t,w)=>{$('msg').textContent=t;$('msg').className=w?'warn':''};
@@ -75,7 +75,14 @@ async function init(){
     try{state=JSON.parse(localStorage.getItem(key())||'{}')}catch(e){}
     say('Leyendo avance guardado en Trimble Connect…');
     try{const e=await leerTC();cargado=true;if(e)state=e}catch(err){say('No se pudo leer '+CARPETA+': '+err.message+' Se usa la copia local.',1)}
-    render();aplicarRol();if(!$('msg').classList.contains('warn'))say('Listo. '+Object.keys(state).length+' ensambles con estado registrado.');
+    try{
+      const t=await leerTexto('editores.json');
+      if(t){const lista=(JSON.parse(t).editores||[]).map(x=>String(x).trim().toLowerCase());
+        puedeMarcar=lista.includes(String(user).trim().toLowerCase());
+        if(!puedeMarcar)avisoRol='Tu usuario solo puede visualizar el avance.'}
+    }catch(err){puedeMarcar=false;avisoRol='No se pudo verificar tu permiso de marcado; solo visualización.'}
+    if(!puedeMarcar){rol='ver';$('modoSel').value='ver';$('modoSel').querySelector('option[value="marcar"]').disabled=true;try{await paint()}catch(e){}}
+    render();aplicarRol();if(avisoRol)say(avisoRol,!puedeMarcar&&avisoRol.startsWith('No se pudo'));else if(!$('msg').classList.contains('warn'))say('Listo. '+Object.keys(state).length+' ensambles con estado registrado.');
   }catch(e){say('No se pudo iniciar: '+e.message,1)}
 }
 
@@ -197,7 +204,7 @@ function render(){
 }
 
 async function marcar(est){
-  if(rol!=='marcar')return;
+  if(rol!=='marcar'||!puedeMarcar)return;
   try{
     await readSel();
     if(!sel.length)return say('Selecciona primero piezas de un ensamble.',1);
@@ -263,6 +270,7 @@ function aplicarRol(){
   document.querySelectorAll('#modo button,#bCol,#bQuit').forEach(b=>b.disabled=m);
 }
 async function guardar(){
+  if(!puedeMarcar)return say('Tu usuario no tiene habilitado el marcado de avance.',1);
   if(!cargado)return say('No se pudo leer el avance de Trimble; no se guarda para no sobrescribirlo. Recarga e inténtalo de nuevo.',1);
   localStorage.setItem(key(),JSON.stringify(state));
   try{say('Guardando en Trimble Connect…');await escribirTC(ARCH,snap());dirty=0;render();say('Guardado en Trimble Connect ('+CARPETA+').')}
@@ -288,6 +296,19 @@ $('bSave').onclick=guardar;
 $('bExp').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([snap()],{type:'application/json'}));a.download='avance_'+proy+'.json';a.click()};
 $('bImp').onclick=()=>$('fImp').click();
 $('fImp').onchange=async e=>{try{const j=JSON.parse(await e.target.files[0].text());Object.assign(state,j.ensambles||{});dirty++;render();say('JSON importado. Guarda para conservarlo.')}catch(x){say('Archivo no válido.',1)}};
+$('bPerm').onclick=async()=>{
+  const out=$('diag');out.textContent='Consultando permisos…';
+  try{
+    await carpeta();let t='Usuario: '+user+'\nCarpeta: '+CARPETA+' ('+carpetaId+')\n';
+    try{const u=await API.user.getUser();t+='getUser: '+JSON.stringify(u).slice(0,300)+'\n'}catch(e){}
+    const rutas=['/folders/'+carpetaId,'/folders/'+carpetaId+'/permissions','/folders/'+carpetaId+'/permission','/folders/'+carpetaId+'/acl','/projects/'+pid+'/users/me','/users/me'];
+    for(const r of rutas){
+      try{const x=await fetch(baseTC+r,{headers:{Authorization:'Bearer '+tok}});const b=await x.text();t+='\nGET '+r+' -> '+x.status+'\n'+b.slice(0,700)+'\n'}
+      catch(e){t+='\nGET '+r+' -> error '+e.message+'\n'}
+    }
+    out.textContent=t;
+  }catch(e){out.textContent='Error: '+(e.message||e)}
+};
 $('bDiag').onclick=async()=>{
   const out=$('diag');
   try{
